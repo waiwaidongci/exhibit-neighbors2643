@@ -4,6 +4,7 @@ from ..models.note import Note
 from ..utils.serialization import row
 from .runs import get_run
 from .audit import log
+from . import archive
 def list_notes(db):return [row(n) for n in db.scalars(select(Note).order_by(Note.id.desc()))]
 def create_note(db,user,data):
     r=get_run(db,data.run_id)
@@ -14,4 +15,6 @@ def approve_note(db,user,id):
     n=db.get(Note,id)
     if not n:raise HTTPException(404,'未找到说明')
     if n.state!='draft':raise HTTPException(409,'该说明已经批准')
-    n.state='approved';n.approved_by=user.email;log(db,user,'note.approved',n.id,n.title);db.commit();return row(n)
+    n.state='approved';n.approved_by=user.email
+    archive.register_note(db,n,user)
+    log(db,user,'note.approved',n.id,n.title);db.commit();return row(n)

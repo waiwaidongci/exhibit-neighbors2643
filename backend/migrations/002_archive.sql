@@ -1,0 +1,4 @@
+-- SQLAlchemy metadata initializes tables idempotently.
+-- Archive migration ledger: archive_items, migrations, migration_files, archive_pointer, download_leases.
+-- Unique natural keys: archive_item(kind, ref_id); migration.generation; migration_file(migration_id, item_id).
+-- archive_pointer is a singleton row (id=1) switched by fenced compare-and-swap on generation.

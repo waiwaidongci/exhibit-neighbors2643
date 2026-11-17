@@ -14,6 +14,7 @@
 4. 完整结果：真实算法摘要、专属诊断、全部CSV导出和可恢复失败态。
 5. 策展备选：分析师草案→负责人批准→阅读者下载批准快照。
 6. 审计：登录、来源修改、任务worker完成、业务说明批准等事件。
+7. 留档迁移：不停服把留档迁往新目录，逐份核验内容指纹，页面发起并查看待迁移、迁移中、已完成及阻断原因。
 
 ## 快速启动
 
@@ -43,7 +44,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 | 邮箱 | 角色 | 权限 |
 |---|---|---|
-| admin@exhibit-neighbors.demo | admin | 全部录入/执行、批准业务说明 |
+| admin@exhibit-neighbors.demo | admin | 全部录入/执行、批准业务说明、发起与推进留档迁移 |
 | analyst@exhibit-neighbors.demo | analyst | 录入来源/样本、执行、提交说明，无批准权 |
 | viewer@exhibit-neighbors.demo | viewer | 只读、导出结果及已批准快照 |
 
@@ -68,6 +69,18 @@ Exhibition / VisitorRating / RecommendationRun / CuratorSelection 是核心实�
 
 失败态：业务字段缺失/非有限数值、参数越界、样本不足、退化特征或结构错误均明确拒绝或将任务标failed，错误消息保存在任务中。可回到来源或配置修正后重新执行，历史失败记录保留。
 
+## 留档迁移
+
+已完成任务的结果CSV与已批准快照CSV登记为留档件（`archive_items`），内容指纹为冻结结果确定性序列化的SHA256；原件口径是数据库中的冻结结果，迁移与修复只序列化冻结结果，**绝不调用算法重算评分冒充原件**。留档根目录为 `ARTIFACT_DIR/archive/gen-N`，生效目录由单行索引（`archive_pointer`）记录。
+
+- 可核验：逐份复制后重读目标文件核对指纹；源文件损坏或缺失时隔离至 `quarantine/` 并按冻结结果重新生成（留修复痕）；冻结结果缺失或与登记指纹不一致的件直接隔离，下载返回409与阻断原因。
+- 不停服：迁移期间新任务照常完成并登记进当前生效目录；下载在开始时登记租约绑定当时完整版本，切换后来到的请求走新目录；进行中的下载不受切换影响。
+- 断点续传：复制、索引切换、旧件回收分段提交；进程中断后按生效索引校正状态，再执行沿用 `migration_files` 已登记件，已核验份不重复复制。
+- 代次围栏：新代登记即取代更旧的未完成代；索引切换是 `generation` 上的原子比较交换，迟归的旧执行者无法回切；同一代的推进用Redis锁互斥，锁不可用时仍由数据库围栏兜底。
+- 回收：旧件等到在途下载租约结束（租约10分钟过期兜底）才删除；只删不再被任何登记件引用的旧代文件，worker心跳等共用文件与当前登记位置永不误删。
+
+页面"留档迁移"（负责人发起，其余角色只读）展示生效代次、在途下载、每代进度与阻断原因，以及文件明细（待迁移/迁移中/已完成/已隔离）和留档总账。接口：`GET /archive` 总览；`POST /migrations` 发起新一代并推进；`POST /migrations/{id}/advance` 中断后继续。迁移相关事件（创建、逐代切换、隔离、修复、完成）写入审计。
+
 已知边界：显式1–5评分，不是隐式行为推荐；按展品代码确定性留一，不能当作时间外推验证。相似度只取正值，至少两个共同评分；回退会显示依据。生产建议在完成评估后用全量已知评分，不将训练评分误报验证。
 
 ## 演示数据与一天剧本
@@ -82,6 +95,7 @@ Exhibition / VisitorRating / RecommendationRun / CuratorSelection 是核心实�
 6. 09:25 分析师查看专属诊断及逐行结果，并下载CSV复算。
 7. 09:30 提交“十一月业务复核意见”，负责人核对并批准。
 8. 09:40 viewer下载批准快照，查看审计中的worker完成与批准事件。
+9. 09:50 负责人在“留档迁移”发起新一代迁移：逐份核验指纹后索引切到新目录，viewer下载不受影响；旧件等在途下载结束后回收。
 
 ## 目录与本地开发
 
@@ -89,7 +103,7 @@ Exhibition / VisitorRating / RecommendationRun / CuratorSelection 是核心实�
 frontend/src/api, stores, types, components/common, hooks, pages, router, utils, constants
 backend/src/routes, controllers, services, models, schemas, middlewares, utils, constants, config
 backend/scripts/seed_demo.py
-backend/migrations/001_initial.sql
+backend/migrations/001_initial.sql, 002_archive.sql
 ```
 
 本地后端：Python3.11虚拟环境安装 `backend/requirements.txt`，设置 `DATABASE_URL`、`REDIS_URL`、`ARTIFACT_DIR`，在backend目录运行 `uvicorn src.main:app --reload`；另开终端运行 `python -m src.worker`。原生前端无需编译，推荐以Compose Nginx访问，保证 `/api/` 代理。前端为Google Fonts双字体、oklch色板，离线字体回退serif；1280/768/390响应布局。
@@ -103,6 +117,6 @@ backend/migrations/001_initial.sql
 | DATABASE_URL / REDIS_URL | Compose内部连接，定义在compose的env锚点 |
 | ARTIFACT_DIR | `/artifacts`，后端worker共享 |
 
-共享枚举：`backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js` 都定义 admin/analyst/viewer、queued/running/completed/failed、draft/approved。后端service检查对应字符串；README为全量值说明。共享前端组件table/status/chart/business跨总览、结果、配置与复核复用；actions hook和format utils负责交互/格式。后端errors与rate_limit是两个中间件。
+共享枚举：`backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js` 都定义 admin/analyst/viewer、queued/running/completed/failed、draft/approved，以及留档迁移的 ready/quarantined、迁移代次与文件状态。后端service检查对应字符串；README为全量值说明。共享前端组件table/status/chart/business跨总览、结果、配置与复核复用；actions hook和format utils负责交互/格式。后端errors与rate_limit是两个中间件。
 
 测试及截图在批根 `test-artifacts/gb-0045/`，不混入源码。独立算法oracle、HTTP完整流程和真实Playwright浏览器流程见该目录 `TESTING.md`。License：MIT。

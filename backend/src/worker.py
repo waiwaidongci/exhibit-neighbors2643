@@ -7,7 +7,7 @@ from .models.run import Run
 from .models import source,record,user,note,audit
 from .services.algorithm import calculate
 from .services.audit import log
-from .services.export import csv_response
+from .services import archive
 queue=Redis.from_url(REDIS_URL)
 ARTIFACT_DIR.mkdir(parents=True,exist_ok=True)
 def execute(id):
@@ -19,8 +19,7 @@ def execute(id):
             result=calculate(r.snapshot['records'],r.parameters)
             json.dumps(result,allow_nan=False)
             r.result=result;r.state='completed'
-            response=csv_response(result,'run.csv')
-            (ARTIFACT_DIR/f'run-{r.id}.csv').write_bytes(response.body)
+            archive.register_run(db,r)
             log(db,'worker','run.completed',r.id)
         except Exception as e:
             logging.exception('analysis failed');r.state='failed';r.error=str(e)[:2000]
